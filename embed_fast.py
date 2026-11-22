@@ -1,10 +1,11 @@
 """Faster stand-in for preprocess_embeddings.py (same models, prompts, "title text" format).
 
 Writes float16, L2-normalised embeddings. Several processes on different GPUs can run the same command:
-corpus chunks are claimed through lock files. Delete stale *.lock files after a crash.
+corpus chunks are claimed through lock files holding the owner pid. Stale locks are reclaimed.
 
 CUDA_VISIBLE_DEVICES=1 python embed_fast.py hotpotqa mistral [vllm]
 """
+import faulthandler
 import json
 import os
 import sys
@@ -53,8 +54,8 @@ def main(dataset, name, engine="st"):
 
         def encode(texts):
             ids = tok(list(texts), truncation=True, max_length=512)["input_ids"]
-            res = llm.embed([{"prompt_token_ids": i} for i in ids], use_tqdm=False)
-            e = np.array([r.outputs.embedding for r in res], dtype=np.float32)
+            res = llm.encode([{"prompt_token_ids": i} for i in ids], pooling_task="embed", use_tqdm=False)
+            e = np.stack([r.outputs.data.float().cpu().numpy() for r in res])
             return (e / np.linalg.norm(e, axis=1, keepdims=True)).astype(np.float16)
     else:
         import torch
@@ -80,15 +81,25 @@ def main(dataset, name, engine="st"):
     for lo in range(0, len(texts), CHUNK):
         out = f"{parts}/{lo:09d}.npy"
         try:
-            os.close(os.open(out + ".lock", os.O_CREAT | os.O_EXCL))
+            # ponytail: single host only, a lock without .npy whose pid is gone is stale
+            if os.path.exists(out + ".lock") and not os.path.exists(out):
+                pid = open(out + ".lock").read().strip()
+                if pid and not os.path.exists(f"/proc/{pid}"):
+                    os.unlink(out + ".lock")
+            fd = os.open(out + ".lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
         except FileExistsError:
             continue
+        # a chunk takes about 15 min; after 40, print where every thread is stuck and exit
+        faulthandler.dump_traceback_later(2400, exit=True)
         t = time.time()
         e = encode(texts[lo:lo + CHUNK])
         assert np.isfinite(e).all()
         np.save(out + ".tmp.npy", e)
         os.rename(out + ".tmp.npy", out)
-        print(f"{out} {len(e) / (time.time() - t):.0f} passages/s", flush=True)
+        faulthandler.cancel_dump_traceback_later()
+        print(f"{out} {engine} {len(e) / (time.time() - t):.0f} passages/s", flush=True)
 
 
 if __name__ == "__main__":
