@@ -379,7 +379,7 @@ def greedy_search(qid,k_neighbors,search_L,start,metric="cos"):
 
     return neighbors
 
-def greedy_search_quota(qid,k_neighbors,query_quota,start,metric="cos"):
+def greedy_search_quota(qid,k_neighbors,query_quota,start,metric="cos",keep_k=None):
     global graph
 
     start_time=time.time()
@@ -419,6 +419,11 @@ def greedy_search_quota(qid,k_neighbors,query_quota,start,metric="cos"):
         heapq.heappop(Q)
         V=[x for x in graph[p] if in_Q[x] is False]
         V=list(set(V))
+
+        # multi-fidelity variant: pre-score unseen neighbors with the cheap metric, keep the best keep_k.
+        # Dropped neighbors stay unseen, so they can be proposed again by another vertex.
+        if keep_k is not None and len(V)>keep_k:
+            V=[x for _,x in sorted(zip(dist_all(qid,V,"cos"),V))[:keep_k]]
 
         if len(V)>query_quota-current_dist_count:
             V=V[:query_quota-current_dist_count]
@@ -510,8 +515,12 @@ def process_query(qid,retrieval_algo,k_neighbors,query_complexity,query_quota,se
         in_Q=[]
         in_vis=[]
 
+        # "bi(ours)" is the paper's method, "bi(ours-top8)" keeps 8 neighbors per expansion
+        match=re.search(r"-top(\d+)",retrieval_algo)
+        keep_k=int(match.group(1)) if match else None
+
         second_L=min(max(100,int(second_query_quota/2)),len(retrieval_neighbors))
-        expensive_neighbors=greedy_search_quota(query_id[qid],k_neighbors=k_neighbors,query_quota=second_query_quota,start=start if second_L==0 else retrieval_neighbors[:second_L],metric="expensive")
+        expensive_neighbors=greedy_search_quota(query_id[qid],k_neighbors=k_neighbors,query_quota=second_query_quota,start=start if second_L==0 else retrieval_neighbors[:second_L],metric="expensive",keep_k=keep_k)
         neighbors=expensive_neighbors[:k_neighbors]
         distances=dist_all(query_id[qid],neighbors,metric="expensive",comp_count_factor=0)
     else:
@@ -712,6 +721,13 @@ if "bi-metric" in test_strategy:
         if second_query_quota>first_query_complexity:
             break
         retrieval_test(retrieval_algo="bi(ours)",query_complexity=first_query_complexity,second_query_quota=second_query_quota)
+
+    # multi-fidelity variant of ours
+    for keep_k in [4,8,16,32]:
+        for second_query_quota in [150,200,300,500,700,1000,1500,2000,3000,4000,6000,8000]:
+            if second_query_quota>first_query_complexity:
+                break
+            retrieval_test(retrieval_algo=f"bi(ours-top{keep_k})",query_complexity=first_query_complexity,second_query_quota=second_query_quota)
 
     # bi-metric (baseline)
     for second_query_quota in [10,20,30,40,50,60,80,100,120,150,200,250,300,400,500,600,700,800,900,1000,1200,1500,2000,2500,3000,3500,4000,5000,6000,7000,8000,10000,12000,15000,20000,25000,30000]:
