@@ -161,7 +161,7 @@ def method_code(name):
     return int(name[4 if r else 1:]), r
 
 
-def distances(emb, q, dev, chunk=200_000):
+def distances(emb, q, dev, chunk=20_000):
     """1 - cos, float32, in chunks so that float16 storage never means float16 arithmetic."""
     q = torch.from_numpy(q.astype(np.float32)).to(dev)
     q = torch.nn.functional.normalize(q, dim=1)
